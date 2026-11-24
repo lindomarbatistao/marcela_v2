@@ -1,0 +1,35 @@
+{
+  "expo": {
+    "name": "Medidor",
+    "slug": "Medidor",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "package": "com.lintelecom.mobile"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-status-bar",
+      "expo-secure-store"
+    ],
+    "owner": "lintelecom",
+    "extra": {
+      "eas": {
+        "projectId": "60822dc7-0f27-44e4-98b7-f9a0e53c6e02"
+      }
+    }
+  }
+}
