@@ -19,6 +19,12 @@ class LeituraSerializer(serializers.ModelSerializer):
     )
 
     timestamp = serializers.DateTimeField(required=False)
+    potencia_ventilador = serializers.FloatField(
+        min_value=0,
+        max_value=100,
+        required=False,
+        allow_null=True,
+    )
     
     class Meta:
         model = Leitura
@@ -31,6 +37,7 @@ class LeituraSerializer(serializers.ModelSerializer):
             "recebida_em",
             "ventilador_ligado",
             "umidade_baixa",
+            "potencia_ventilador",
         ]
 
         read_only_fields = ["id", "recebida_em"]
@@ -47,7 +54,28 @@ class LimitesSerializer(serializers.ModelSerializer):
         min_value=0,
         max_value=100,
     )
+    kp = serializers.FloatField(
+        min_value=0,
+        max_value=100,
+        required=False,
+    )
+    ki = serializers.FloatField(
+        min_value=0,
+        max_value=100,
+        required=False,
+    )
+    kd = serializers.FloatField(
+        min_value=0,
+        max_value=100,
+        required=False,
+    )
 
     class Meta:
         model = Dispositivo
-        fields = ["temperatura_maxima", "umidade_minima"]
+        fields = [
+            "temperatura_maxima",
+            "umidade_minima",
+            "kp",
+            "ki",
+            "kd",
+        ]

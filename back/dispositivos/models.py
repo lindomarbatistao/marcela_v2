@@ -11,6 +11,9 @@ class Dispositivo(models.Model):
     led_ligado = models.BooleanField(default=False)
     temperatura_maxima = models.FloatField(default=20)
     umidade_minima = models.FloatField(default=30)
+    kp = models.FloatField(default=10)
+    ki = models.FloatField(default=0.2)
+    kd = models.FloatField(default=1)
 
     def __str__(self):
         return self.nome
@@ -28,6 +31,7 @@ class Leitura(models.Model):
     timestamp = models.DateTimeField(null=True, blank=True)
     ventilador_ligado = models.BooleanField(default=False)
     umidade_baixa = models.BooleanField(default=False)
+    potencia_ventilador = models.FloatField(null=True, blank=True)
 
     class Meta:
         ordering = ["-recebida_em"]
