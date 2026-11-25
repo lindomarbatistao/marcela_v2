@@ -4,24 +4,91 @@ import {
   Image,
   ScrollView,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
 
 import * as SecureStore from "expo-secure-store";
-import Svg, { Circle, Line, Polyline } from "react-native-svg";
 import Slider from "@react-native-community/slider";
+
+import Svg, {
+  Circle,
+  Line,
+  Polyline,
+  Text as SvgText,
+} from "react-native-svg";
 
 import styles from "./styles";
 
 const API = "https://marcelaconceicaosilva74.pythonanywhere.com/api";
 const INTERVALO_MS = 3000;
+const TEMPO_LIMITE_MS = 15000;
 
 function formatarValor(valor) {
   return valor.toFixed(1).replace(".", ",");
 }
 
-function Grafico({ titulo, unidade, cor, valores }) {
+function validarConfiguracao(dados) {
+  return (
+    Number.isFinite(dados.temperatura_maxima) &&
+    dados.temperatura_maxima >= -40 &&
+    dados.temperatura_maxima <= 80 &&
+    Number.isFinite(dados.umidade_minima) &&
+    dados.umidade_minima >= 0 &&
+    dados.umidade_minima <= 100 &&
+    [dados.kp, dados.ki, dados.kd].every(
+      (valor) =>
+        Number.isFinite(valor) &&
+        valor >= 0 &&
+        valor <= 100
+    )
+  );
+}
+
+async function requisicao(url, opcoes) {
+  const controlador = new AbortController();
+
+  const temporizador = setTimeout(() => {
+    controlador.abort();
+  }, TEMPO_LIMITE_MS);
+
+  try {
+    const resposta = await fetch(url, {
+      ...opcoes,
+      signal: controlador.signal,
+    });
+
+    // Lê o corpo ainda dentro do prazo da requisição.
+    const texto = await resposta.text();
+
+    return {
+      ok: resposta.ok,
+      status: resposta.status,
+      texto,
+    };
+  } catch (erro) {
+    if (erro.name === "AbortError") {
+      throw new Error("O servidor demorou para responder. Tente novamente.");
+    }
+
+    throw erro;
+  } finally {
+    clearTimeout(temporizador);
+  }
+}
+
+function interpretarJSON(resposta, caminho) {
+  try {
+    return JSON.parse(resposta.texto);
+  } catch {
+    throw new Error(
+      `Resposta inválida em ${caminho}. HTTP ${resposta.status}`
+    );
+  }
+}
+
+function Grafico({ titulo, unidade, cor, valores, limite }) {
   if (valores.length === 0) {
     return (
       <View style={[styles.cartao, { marginBottom: 16 }]}>
@@ -41,10 +108,11 @@ function Grafico({ titulo, unidade, cor, valores }) {
       valores.length === 1
         ? 150
         : 10 + (indice * 280) / (valores.length - 1),
+
     y:
       amplitude === 0
-        ? 60
-        : 110 - ((valor - menor) / amplitude) * 100,
+        ? 70
+        : 110 - ((valor - menor) / amplitude) * 80,
   }));
 
   const linha = pontos.map(({ x, y }) => `${x},${y}`).join(" ");
@@ -59,6 +127,16 @@ function Grafico({ titulo, unidade, cor, valores }) {
       </Text>
 
       <Svg width="100%" height={120} viewBox="0 0 300 120">
+        <SvgText
+          x={290}
+          y={13}
+          textAnchor="end"
+          fontSize={9}
+          fill="#64748b"
+        >
+          {limite}
+        </SvgText>
+
         <Line
           x1={10}
           y1={110}
@@ -84,10 +162,8 @@ function Grafico({ titulo, unidade, cor, valores }) {
         />
       </Svg>
 
-      <Text style={styles.rotulo}>
+      <Text style={[styles.rotulo, { fontSize: 11 }]}>
         Mín. {formatarValor(menor)} {unidade}
-        {"  ·  "}
-        Máx. {formatarValor(maior)} {unidade}
       </Text>
     </View>
   );
@@ -95,6 +171,12 @@ function Grafico({ titulo, unidade, cor, valores }) {
 
 function Indicador({ titulo, ativo, cor, descricao }) {
   const disponivel = typeof ativo === "boolean";
+
+  let estado = "Aguardando informação do ESP32";
+
+  if (disponivel) {
+    estado = ativo ? "Acionado" : "Desativado";
+  }
 
   return (
     <View
@@ -112,8 +194,7 @@ function Indicador({ titulo, ativo, cor, descricao }) {
             height: 16,
             borderRadius: 8,
             marginRight: 10,
-            backgroundColor:
-              disponivel && ativo ? cor : "#94a3b8",
+            backgroundColor: ativo === true ? cor : "#94a3b8",
           }}
         />
 
@@ -130,11 +211,7 @@ function Indicador({ titulo, ativo, cor, descricao }) {
       </View>
 
       <Text style={{ color: "#475569", marginTop: 8 }}>
-        {disponivel
-          ? ativo
-            ? "Acionado"
-            : "Desativado"
-          : "Aguardando informação do ESP32"}
+        {estado}
       </Text>
 
       <Text style={{ color: "#64748b", marginTop: 4 }}>
@@ -150,12 +227,18 @@ export default function Home({ navigation }) {
   const montado = useRef(false);
 
   const [leituras, setLeituras] = useState([]);
+
   const [temperaturaMaxima, setTemperaturaMaxima] = useState(20);
   const [umidadeMinima, setUmidadeMinima] = useState(30);
+
+  const [kp, setKp] = useState("10");
+  const [ki, setKi] = useState("0.2");
+  const [kd, setKd] = useState("1");
 
   const [iniciando, setIniciando] = useState(true);
   const [salvando, setSalvando] = useState(false);
   const [saindo, setSaindo] = useState(false);
+
   const [erroLeituras, setErroLeituras] = useState("");
   const [erroLimites, setErroLimites] = useState("");
   const [mensagem, setMensagem] = useState("");
@@ -168,7 +251,7 @@ export default function Home({ navigation }) {
     }
 
     function enviar(access) {
-      return fetch(`${API}${caminho}`, {
+      return requisicao(`${API}${caminho}`, {
         method,
         headers: {
           Accept: "application/json",
@@ -184,9 +267,10 @@ export default function Home({ navigation }) {
     let resposta = await enviar(sessao.access);
 
     if (resposta.status === 401) {
-      const renovacao = await fetch(`${API}/refresh/`, {
+      const renovacao = await requisicao(`${API}/refresh/`, {
         method: "POST",
         headers: {
+          Accept: "application/json",
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
@@ -211,7 +295,10 @@ export default function Home({ navigation }) {
         );
       }
 
-      const dadosRenovacao = await renovacao.json();
+      const dadosRenovacao = interpretarJSON(
+        renovacao,
+        "/refresh/"
+      );
 
       if (
         typeof dadosRenovacao.access !== "string" ||
@@ -234,17 +321,13 @@ export default function Home({ navigation }) {
       resposta = await enviar(novosTokens.access);
     }
 
-    const dados = await resposta.json().catch(() => {
-      throw new Error(
-        `Resposta inválida da API. HTTP ${resposta.status}`
-      );
-    });
+    const dados = interpretarJSON(resposta, caminho);
 
     if (!resposta.ok) {
       throw new Error(
-        dados.detail ||
-          dados.erro ||
-          `Erro HTTP ${resposta.status}: ${JSON.stringify(dados)}`
+        dados?.detail ||
+          dados?.erro ||
+          `Erro em ${caminho}. HTTP ${resposta.status}: ${JSON.stringify(dados)}`
       );
     }
 
@@ -258,7 +341,7 @@ export default function Home({ navigation }) {
       throw new Error("A API retornou um formato de leituras inválido.");
     }
 
-    const registros = dados.map((leitura) => ({
+    const registros = dados.slice(0, 100).map((leitura) => ({
       ...leitura,
       temperatura: Number(leitura.temperatura),
       umidade: Number(leitura.umidade),
@@ -275,45 +358,51 @@ export default function Home({ navigation }) {
     }
 
     if (montado.current) {
-      // A API retorna da mais recente para a mais antiga.
-      // Os gráficos mostram da mais antiga para a mais recente.
-      setLeituras(registros.slice(0, 100).reverse());
+      // A API envia da mais recente para a mais antiga.
+      // O gráfico apresenta da mais antiga para a mais recente.
+      setLeituras(registros.reverse());
       setErroLeituras("");
     }
+  }
+
+  function aplicarConfiguracao(dados) {
+    setTemperaturaMaxima(dados.temperatura_maxima);
+    setUmidadeMinima(dados.umidade_minima);
+
+    setKp(String(dados.kp));
+    setKi(String(dados.ki));
+    setKd(String(dados.kd));
   }
 
   async function carregarLimites() {
     const dados = await acessarAPI("/limites/");
 
-    const temperatura = Number(dados.temperatura_maxima);
-    const umidade = Number(dados.umidade_minima);
-
-    if (
-      !Number.isFinite(temperatura) ||
-      temperatura < -40 ||
-      temperatura > 80 ||
-      !Number.isFinite(umidade) ||
-      umidade < 0 ||
-      umidade > 100
-    ) {
-      throw new Error("A API retornou limites inválidos.");
+    if (!validarConfiguracao(dados)) {
+      throw new Error(
+        "A API precisa retornar temperatura_maxima, umidade_minima, kp, ki e kd válidos."
+      );
     }
 
     if (montado.current) {
-      setTemperaturaMaxima(temperatura);
-      setUmidadeMinima(umidade);
+      aplicarConfiguracao(dados);
       setErroLimites("");
     }
   }
 
   useEffect(() => {
     montado.current = true;
+    let ativo = true;
 
     async function iniciar() {
       ocupado.current = true;
 
       try {
         const salvo = await SecureStore.getItemAsync("tokens");
+
+        if (!ativo) {
+          return;
+        }
+
         const sessao = salvo ? JSON.parse(salvo) : null;
 
         if (!sessao?.access || !sessao?.refresh) {
@@ -326,28 +415,27 @@ export default function Home({ navigation }) {
         try {
           await atualizarLeituras();
         } catch (erro) {
-          if (montado.current) {
+          if (ativo) {
             setErroLeituras(erro.message);
           }
         }
 
-        if (montado.current && tokens.current) {
+        if (ativo && tokens.current) {
           try {
             await carregarLimites();
           } catch (erro) {
-            if (montado.current) {
+            if (ativo) {
               setErroLimites(erro.message);
             }
           }
         }
       } catch (erro) {
-        if (montado.current) {
+        if (ativo) {
           Alert.alert("Falha ao iniciar", erro.message);
         }
       } finally {
-        ocupado.current = false;
-
-        if (montado.current) {
+        if (ativo) {
+          ocupado.current = false;
           setIniciando(false);
         }
       }
@@ -356,11 +444,7 @@ export default function Home({ navigation }) {
     iniciar();
 
     const intervalo = setInterval(async () => {
-      if (
-        !montado.current ||
-        ocupado.current ||
-        !tokens.current
-      ) {
+      if (!ativo || ocupado.current || !tokens.current) {
         return;
       }
 
@@ -369,15 +453,18 @@ export default function Home({ navigation }) {
       try {
         await atualizarLeituras();
       } catch (erro) {
-        if (montado.current) {
+        if (ativo) {
           setErroLeituras(erro.message);
         }
       } finally {
-        ocupado.current = false;
+        if (ativo) {
+          ocupado.current = false;
+        }
       }
     }, INTERVALO_MS);
 
     return () => {
+      ativo = false;
       montado.current = false;
       clearInterval(intervalo);
     };
@@ -389,20 +476,54 @@ export default function Home({ navigation }) {
       return;
     }
 
+    const textos = [kp, ki, kd];
+
+    const ganhos = textos.map((texto) =>
+      Number(texto.trim().replace(",", "."))
+    );
+
+    const camposPreenchidos = textos.every(
+      (texto) => texto.trim() !== ""
+    );
+
+    const configuracao = {
+      temperatura_maxima: temperaturaMaxima,
+      umidade_minima: umidadeMinima,
+      kp: ganhos[0],
+      ki: ganhos[1],
+      kd: ganhos[2],
+    };
+
+    if (!camposPreenchidos || !validarConfiguracao(configuracao)) {
+      Alert.alert(
+        "Configuração inválida",
+        "Preencha Kp, Ki e Kd com números entre 0 e 100."
+      );
+      return;
+    }
+
     ocupado.current = true;
     setSalvando(true);
     setMensagem("");
 
     try {
-      await acessarAPI("/limites/", "POST", {
-        temperatura_maxima: temperaturaMaxima,
-        umidade_minima: umidadeMinima,
-      });
+      const dados = await acessarAPI(
+        "/limites/",
+        "POST",
+        configuracao
+      );
+
+      if (!validarConfiguracao(dados)) {
+        throw new Error(
+          "A API não confirmou todos os parâmetros do PID. Confira o back-end."
+        );
+      }
 
       if (montado.current) {
+        aplicarConfiguracao(dados);
         setErroLimites("");
         setMensagem(
-          "Limites salvos. Aguarde a próxima leitura do ESP32."
+          "Configuração salva. Aguarde a próxima leitura do ESP32."
         );
       }
     } catch (erro) {
@@ -430,9 +551,14 @@ export default function Home({ navigation }) {
     try {
       await SecureStore.deleteItemAsync("tokens");
       tokens.current = null;
-      navigation.replace("Login");
+
+      if (montado.current) {
+        navigation.replace("Login");
+      }
     } catch (erro) {
-      Alert.alert("Erro ao sair", erro.message);
+      if (montado.current) {
+        Alert.alert("Erro ao sair", erro.message);
+      }
     } finally {
       ocupado.current = false;
 
@@ -443,17 +569,38 @@ export default function Home({ navigation }) {
   }
 
   const ultimaLeitura = leituras[leituras.length - 1];
-  const horario = ultimaLeitura?.timestamp || ultimaLeitura?.recebida_em;
+
+  const horario =
+    ultimaLeitura?.timestamp || ultimaLeitura?.recebida_em;
+
+  const potencia = ultimaLeitura?.potencia_ventilador;
+
+  const potenciaDisponivel =
+    typeof potencia === "number" &&
+    Number.isFinite(potencia) &&
+    potencia >= 0 &&
+    potencia <= 100;
+
   const controlesDesabilitados = iniciando || salvando || saindo;
+
+  const camposPID = [
+    { nome: "Kp", valor: kp, alterar: setKp },
+    { nome: "Ki", valor: ki, alterar: setKi },
+    { nome: "Kd", valor: kd, alterar: setKd },
+  ];
 
   return (
     <ScrollView
-      style={{ flex: 1, backgroundColor: "#f1f5f9" }}
+      style={{
+        flex: 1,
+        backgroundColor: "#f1f5f9",
+      }}
       contentContainerStyle={{
         padding: 24,
         paddingTop: 48,
         paddingBottom: 40,
       }}
+      keyboardShouldPersistTaps="handled"
     >
       <Image
         source={require("../../assets/senai.png")}
@@ -488,6 +635,7 @@ export default function Home({ navigation }) {
         unidade="°C"
         cor="#b91c1c"
         valores={leituras.map((leitura) => leitura.temperatura)}
+        limite={`Máx. ${formatarValor(temperaturaMaxima)} °C`}
       />
 
       <Grafico
@@ -495,13 +643,14 @@ export default function Home({ navigation }) {
         unidade="%"
         cor="#2563eb"
         valores={leituras.map((leitura) => leitura.umidade)}
+        limite={`Mín. ${formatarValor(umidadeMinima)}%`}
       />
 
       <View style={styles.cartao}>
         <Text style={styles.estado}>Controle automático</Text>
 
         <Text style={[styles.rotulo, { marginTop: 24 }]}>
-          Temperatura máxima
+          Temperatura desejada
         </Text>
 
         <Text style={[styles.estado, { color: "#b91c1c" }]}>
@@ -521,11 +670,11 @@ export default function Home({ navigation }) {
           minimumTrackTintColor="#b91c1c"
           maximumTrackTintColor="#cbd5e1"
           thumbTintColor="#b91c1c"
-          accessibilityLabel="Temperatura máxima"
+          accessibilityLabel="Temperatura desejada"
         />
 
         <Text style={styles.rotulo}>
-          Aciona o ventilador acima deste valor.
+          O PID ajusta a potência da saída de resfriamento.
         </Text>
 
         <Text style={[styles.rotulo, { marginTop: 24 }]}>
@@ -553,8 +702,54 @@ export default function Home({ navigation }) {
         />
 
         <Text style={styles.rotulo}>
-          Aciona a saída de umidade abaixo deste valor.
+          A saída de umidade é acionada abaixo deste valor.
         </Text>
+
+        <Text style={[styles.estado, { marginTop: 24 }]}>
+          Ajustes do PID
+        </Text>
+
+        <View
+          style={{
+            flexDirection: "row",
+            marginTop: 12,
+          }}
+        >
+          {camposPID.map((campo) => (
+            <View
+              key={campo.nome}
+              style={{
+                flex: 1,
+                marginHorizontal: 4,
+              }}
+            >
+              <Text style={styles.rotulo}>{campo.nome}</Text>
+
+              <TextInput
+                value={campo.valor}
+                onChangeText={(texto) => {
+                  campo.alterar(texto);
+                  setMensagem("");
+                }}
+                keyboardType="decimal-pad"
+                editable={!controlesDesabilitados}
+                accessibilityLabel={`Ganho ${campo.nome}`}
+                style={{
+                  borderWidth: 1,
+                  borderColor: "#cbd5e1",
+                  borderRadius: 8,
+                  paddingHorizontal: 6,
+                  paddingVertical: 12,
+                  marginTop: 6,
+                  textAlign: "center",
+                  color: "#0f172a",
+                  backgroundColor: "#fff",
+                  fontSize: 16,
+                }}
+              />
+            </View>
+          ))}
+        </View>
 
         <TouchableOpacity
           onPress={salvarLimites}
@@ -580,7 +775,7 @@ export default function Home({ navigation }) {
               ? "Carregando..."
               : salvando
                 ? "Salvando..."
-                : "Salvar limites"}
+                : "Salvar configuração"}
           </Text>
         </TouchableOpacity>
 
@@ -596,23 +791,53 @@ export default function Home({ navigation }) {
           </Text>
         )}
 
+        <View style={{ marginTop: 24 }}>
+          <Text style={styles.rotulo}>
+            Potência aplicada pelo PID
+          </Text>
+
+          <Text style={[styles.estado, { color: "#b91c1c" }]}>
+            {potenciaDisponivel
+              ? `${formatarValor(potencia)}%`
+              : "Aguardando ESP32"}
+          </Text>
+
+          <View
+            style={{
+              height: 12,
+              backgroundColor: "#e2e8f0",
+              borderRadius: 6,
+              overflow: "hidden",
+              marginTop: 10,
+            }}
+          >
+            <View
+              style={{
+                width: `${potenciaDisponivel ? potencia : 0}%`,
+                height: "100%",
+                backgroundColor: "#dc2626",
+              }}
+            />
+          </View>
+        </View>
+
         <Indicador
           titulo="Ventilador"
           ativo={ultimaLeitura?.ventilador_ligado}
           cor="#dc2626"
-          descricao="Temperatura acima do limite configurado."
+          descricao="Saída PWM do PID de temperatura."
         />
 
         <Indicador
           titulo="Saída de umidade baixa"
           ativo={ultimaLeitura?.umidade_baixa}
           cor="#2563eb"
-          descricao="Umidade abaixo do limite configurado."
+          descricao="Controle pelo limite mínimo de umidade."
         />
 
         <Text style={[styles.rotulo, { marginTop: 16 }]}>
-          Os indicadores mostram o estado informado pelo ESP32
-          na última leitura.
+          Os indicadores e a potência correspondem à última leitura
+          recebida do ESP32.
         </Text>
       </View>
 
